@@ -14,8 +14,14 @@ repositories {
 	mavenCentral()
 }
 
+// Target the same bytecode level Ghidra compiles extensions for, with whatever JDK runs
+// the build, so any JDK new enough for Ghidra works.
+def ghidraProps = new Properties()
+new File(ghidraInstallDir, 'Ghidra/application.properties').withInputStream { ghidraProps.load(it) }
 kotlin {
-	jvmToolchain(21)
+	compilerOptions {
+		jvmTarget = org.jetbrains.kotlin.gradle.dsl.JvmTarget.fromTarget(ghidraProps.getProperty('application.java.compiler'))
+	}
 }
 
 tasks.register('compileSleigh', Exec) {
