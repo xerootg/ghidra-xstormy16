@@ -21,16 +21,21 @@ downloads for Sigma lenses and the USB Dock UD-01.
 
 ### Arch Linux
 
-The package is published in [xerootg's package feed](https://xerootg.github.io/):
+**From [xerootg's package feed](https://xerootg.github.io/)**, built against `ghidra-noprompt`:
 
 ```sh
-sudo pacman -S ghidra-xstormy16
+sudo pacman -S ghidra-ext-xstormy16
 ```
 
-The package installs into `/opt/ghidra/Ghidra/Extensions/xstormy16`. A pacman hook
-recompiles the SLEIGH spec and updates the extension version whenever `ghidra` or
-`ghidra-noprompt` is upgraded. Without that, Ghidra would refuse to load the extension
-after an upgrade.
+This installs into `/opt/ghidra-noprompt/Ghidra/Extensions/xstormy16`. The package depends
+on exactly the Ghidra release it was built against, and the feed rebuilds it whenever
+Ghidra moves.
+
+**With Arch's own `ghidra` package**, build `packaging/arch/PKGBUILD` (`ghidra-xstormy16`)
+with makepkg. It installs into `/opt/ghidra/Ghidra/Extensions/xstormy16`. Instead of pinning
+a Ghidra version, it ships a pacman hook. The hook recompiles the SLEIGH spec and updates
+the extension version whenever `ghidra` is upgraded, because otherwise Ghidra refuses to
+load the extension.
 
 ### Anywhere else
 
