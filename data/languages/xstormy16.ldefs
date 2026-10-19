@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<language_definitions>
+  <language processor="Xstormy16"
+            endian="little"
+            size="32"
+            variant="default"
+            version="1.0"
+            slafile="xstormy16.sla"
+            processorspec="xstormy16.pspec"
+            id="Xstormy16:LE:32:default">
+    <description>Sanyo/onsemi Xstormy16 (LC88 series), 16-bit registers, 24-bit code addresses</description>
+    <compiler name="default" spec="xstormy16.cspec" id="default"/>
+    <external_name tool="gnu" name="xstormy16"/>
+  </language>
+</language_definitions>

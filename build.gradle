@@ -1,0 +1,35 @@
+// Builds the Ghidra extension zip: compiles the SLEIGH spec and the Kotlin loader.
+// Point GHIDRA_INSTALL_DIR (environment or -P) at a Ghidra installation.
+plugins {
+	id 'org.jetbrains.kotlin.jvm' version '2.4.10'
+}
+
+def ghidraInstallDir = System.getenv('GHIDRA_INSTALL_DIR') ?: project.findProperty('GHIDRA_INSTALL_DIR')
+if (ghidraInstallDir == null) {
+	throw new GradleException('GHIDRA_INSTALL_DIR is not set')
+}
+apply from: new File(ghidraInstallDir).getCanonicalPath() + '/support/buildExtension.gradle'
+
+repositories {
+	mavenCentral()
+}
+
+kotlin {
+	jvmToolchain(21)
+}
+
+tasks.register('compileSleigh', Exec) {
+	group = 'build'
+	description = 'Compiles data/languages/*.slaspec into .sla files'
+	inputs.files(fileTree('data/languages') { include '*.slaspec', '*.sinc' })
+	outputs.files(fileTree('data/languages') { include '*.sla' })
+	commandLine "${ghidraInstallDir}/support/sleigh", '-a', 'data/languages'
+}
+
+buildExtension.dependsOn compileSleigh
+compileKotlin.dependsOn copyDependencies
+
+// Keep build and test tooling out of the installable zip.
+buildExtension {
+	exclude '.kotlin/**', 'test/**', 'packaging/**', '.github/**', 'README.md'
+}

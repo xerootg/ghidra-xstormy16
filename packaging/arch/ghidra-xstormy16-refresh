@@ -1,0 +1,11 @@
+#!/bin/sh
+# Keep the extension loadable across Ghidra upgrades. Ghidra only loads extensions whose
+# extension.properties version matches its own, and compiled .sla files belong to the
+# Ghidra release that compiled them, so both are refreshed against the installed Ghidra.
+set -e
+ghidra=/opt/ghidra
+ext=$ghidra/Ghidra/Extensions/xstormy16
+[ -d "$ext" ] && [ -x "$ghidra/support/sleigh" ] || exit 0
+version=$(sed -n 's/^application.version=//p' "$ghidra/Ghidra/application.properties")
+sed -i "s/^version=.*/version=$version/" "$ext/extension.properties"
+"$ghidra/support/sleigh" -a "$ext/data/languages" > /dev/null 2>&1

@@ -1,0 +1,12 @@
+[Trigger]
+Operation = Install
+Operation = Upgrade
+Type = Package
+Target = ghidra
+Target = ghidra-noprompt
+Target = ghidra-xstormy16
+
+[Action]
+Description = Rebuilding the Xstormy16 SLEIGH spec for the installed Ghidra...
+When = PostTransaction
+Exec = /usr/share/ghidra-xstormy16/refresh

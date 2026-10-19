@@ -1,0 +1,29 @@
+# Maintainer: xerootg <4009802+xerootg@users.noreply.github.com>
+
+pkgname=ghidra-xstormy16
+pkgver=1.0.0
+pkgrel=1
+pkgdesc='Ghidra processor module for Xstormy16 (Sanyo/onsemi LC88) with a loader for Sigma lens and USB dock firmware'
+arch=('any')
+url='https://github.com/xerootg/ghidra-xstormy16'
+license=('GPL-3.0-or-later')
+depends=('ghidra')
+makedepends=('gradle' 'jdk21-openjdk' 'libarchive')
+source=("$pkgname-$pkgver.tar.gz::$url/archive/refs/tags/v$pkgver.tar.gz")
+sha256sums=('SKIP')
+
+build() {
+	cd "$pkgname-$pkgver"
+	export GHIDRA_INSTALL_DIR=/opt/ghidra
+	export GRADLE_USER_HOME="$srcdir/gradle-home"
+	gradle --no-daemon --quiet buildExtension
+}
+
+package() {
+	cd "$pkgname-$pkgver"
+	install -d "$pkgdir/opt/ghidra/Ghidra/Extensions"
+	bsdtar -xf dist/*.zip -C "$pkgdir/opt/ghidra/Ghidra/Extensions"
+	install -Dm755 packaging/arch/ghidra-xstormy16-refresh "$pkgdir/usr/share/$pkgname/refresh"
+	install -Dm644 packaging/arch/ghidra-xstormy16.hook "$pkgdir/usr/share/libalpm/hooks/$pkgname.hook"
+	install -Dm644 README.md "$pkgdir/usr/share/doc/$pkgname/README.md"
+}

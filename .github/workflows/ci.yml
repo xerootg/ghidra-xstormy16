@@ -1,0 +1,76 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+  pull_request:
+
+permissions:
+  contents: write
+
+env:
+  GHIDRA_TAG: Ghidra_12.1.2_build
+  GHIDRA_ZIP: ghidra_12.1.2_PUBLIC_20260605.zip
+  BINUTILS_VERSION: '2.45'
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+
+      - name: Fetch Ghidra
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release download "$GHIDRA_TAG" -R NationalSecurityAgency/ghidra -p "$GHIDRA_ZIP" -D "$RUNNER_TEMP"
+          unzip -q "$RUNNER_TEMP/$GHIDRA_ZIP" -d "$RUNNER_TEMP"
+          echo "GHIDRA_INSTALL_DIR=$(ls -d "$RUNNER_TEMP"/ghidra_*_PUBLIC)" >> "$GITHUB_ENV"
+
+      - name: Cache xstormy16 binutils
+        id: binutils
+        uses: actions/cache@v4
+        with:
+          path: ~/xstormy16-binutils
+          key: xstormy16-binutils-${{ env.BINUTILS_VERSION }}
+
+      - name: Build xstormy16 binutils (reference disassembler)
+        if: steps.binutils.outputs.cache-hit != 'true'
+        run: |
+          cd "$RUNNER_TEMP"
+          curl -sSfL "https://ftp.gnu.org/gnu/binutils/binutils-$BINUTILS_VERSION.tar.xz" | tar xJ
+          mkdir build && cd build
+          "../binutils-$BINUTILS_VERSION/configure" --target=xstormy16-elf --prefix="$HOME/xstormy16-binutils" \
+            --disable-nls --disable-werror --disable-gdb --disable-sim --disable-gprofng > /dev/null
+          make -j"$(nproc)" all-binutils > /dev/null
+          make install-binutils > /dev/null
+
+      - name: Build extension
+        run: ./gradlew --no-daemon buildExtension
+
+      - name: Differential test against GNU objdump
+        run: |
+          mkdir -p "$HOME/.config/ghidra"
+          # Install the built extension where headless Ghidra picks up user extensions.
+          version=$(sed -n 's/^application.version=//p' "$GHIDRA_INSTALL_DIR/Ghidra/application.properties")
+          dest="$HOME/.config/ghidra/ghidra_${version}_PUBLIC/Extensions"
+          mkdir -p "$dest"
+          unzip -q dist/*.zip -d "$dest"
+          OBJDUMP="$HOME/xstormy16-binutils/bin/xstormy16-elf-objdump" test/run_diff.sh
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ghidra-xstormy16
+          path: dist/*.zip
+
+      - name: Publish release
+        if: startsWith(github.ref, 'refs/tags/v')
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release create "$GITHUB_REF_NAME" dist/*.zip --title "$GITHUB_REF_NAME" --notes "Built against Ghidra ${GHIDRA_TAG#Ghidra_}."

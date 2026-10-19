@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<processor_spec>
+  <programcounter register="pc"/>
+  <data_space space="ram"/>
+  <default_symbols>
+    <symbol name="RESET" address="code:0x8000" entry="true"/>
+  </default_symbols>
+  <register_data>
+    <register name="EA"  hidden="true"/>
+    <register name="NA"  hidden="true"/>
+    <register name="RXI" group="FLAGS"/>
+    <register name="Z8"  group="FLAGS"/>
+    <register name="Z16" group="FLAGS"/>
+    <register name="CY"  group="FLAGS"/>
+    <register name="HC"  group="FLAGS"/>
+    <register name="OV"  group="FLAGS"/>
+    <register name="PT"  group="FLAGS"/>
+    <register name="S"   group="FLAGS"/>
+  </register_data>
+</processor_spec>
