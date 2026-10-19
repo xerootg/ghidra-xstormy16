@@ -10,7 +10,7 @@ license=('GPL-3.0-or-later')
 depends=('ghidra')
 makedepends=('gradle' 'jdk21-openjdk' 'libarchive')
 source=("$pkgname-$pkgver.tar.gz::$url/archive/refs/tags/v$pkgver.tar.gz")
-sha256sums=('SKIP')
+sha256sums=('9e75c5df6a7189c656959c9d90bf5eefd43f138ac8a47fe5f87b69344423c50c')
 
 build() {
 	cd "$pkgname-$pkgver"
