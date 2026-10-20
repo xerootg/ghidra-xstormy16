@@ -9,7 +9,12 @@
 #   are converted to SLEIGH's LSB-first numbering within each word.
 # * r14 is the PSW and r15 is the stack pointer. The condition flags are kept in separate
 #   byte registers (Z8, Z16, CY, HC, OV, PT, S) so the decompiler can follow compares into
-#   branches. Code that reads or writes r14 explicitly therefore does not see them.
+#   branches. The psw register itself only holds PSW[11:7]; its flag and Rx bits are
+#   stale. Instructions that name r14 (as Rd, Rs, Rb or an Rx with RXI = 14), push or pop
+#   it, or save and restore it in an interrupt frame pack the flags and RXI into psw before
+#   reading it and unpack them after writing it, following the order of CGEN's semantics.
+#   Those steps sit in subtables selected by the register fields, so instructions on other
+#   registers produce the same p-code as without them.
 # * Rx is the register whose number sits in PSW[15:12]: the destination of the most recent
 #   flag-setting instruction. It is tracked in RXI and accessed through the register space,
 #   which the decompiler resolves whenever RXI is known.
@@ -32,6 +37,7 @@ define register offset=0x20 size=4 [ pc ];
 define register offset=0x40 size=1 [ Z8 Z16 CY HC OV PT S RXI ];
 define register offset=0x60 size=4 [ EA ];
 define register offset=0x68 size=2 [ NA ];
+define register offset=0x6a size=2 [ PSWO ];   # the packed PSW before the instruction
 
 define pcodeop halt;
 define pcodeop hold;
@@ -72,6 +78,7 @@ define token w1 (16)
 	op5    = (12,15)
 	op5a   = (15,15)
 	Rb     = (12,14)
+	Rbn    = (12,14)
 	imm3b  = (12,14)
 	simm12 = (0,11) signed dec
 	imm16  = (0,15)
@@ -106,25 +113,27 @@ macro flagsw(v) {
 
 # set-psw-add: d = a + b + c. Carry and overflow use the p-code carry/scarry ops so the
 # decompiler can fold compare-and-branch sequences back into ordinary comparisons.
+# OV is the overflow of the whole a + b + c: the two partial overflows can only occur in
+# opposite directions (0x8000 + 0xffff + 1), where they cancel, so they combine with XOR.
 macro addf(d, a, b, c) {
 	local cw:2 = zext(c);
 	local ab:2 = a + b;
 	local res:2 = ab + cw;
 	HC = ((a & 0xf) + (b & 0xf) + cw) > 0xf;
 	CY = carry(a, b) || carry(ab, cw);
-	OV = scarry(a, b) || scarry(ab, cw);
+	OV = scarry(a, b) ^^ scarry(ab, cw);
 	flagsw(res);
 	d = res;
 }
 
-# set-psw-sub: d = a - b - c, CY is the borrow
+# set-psw-sub: d = a - b - c, CY is the borrow; OV as for addf
 macro subf(d, a, b, c) {
 	local cw:2 = zext(c);
 	local ab:2 = a - b;
 	local res:2 = ab - cw;
 	HC = (((a & 0xf) - (b & 0xf) - cw) & 0x10) != 0;
 	CY = (a < b) || (ab < cw);
-	OV = sborrow(a, b) || sborrow(ab, cw);
+	OV = sborrow(a, b) ^^ sborrow(ab, cw);
 	flagsw(res);
 	d = res;
 }
@@ -137,6 +146,114 @@ macro cmpf(a, b) {
 	OV = sborrow(a, b);
 	flagsw(res);
 }
+
+#
+# PSW synchronisation (see the modelling notes)
+#
+
+# psw = PSW[11:7] | flags | RXI << 12. The flags are masked to bit 0 (they only ever hold
+# 0 or 1) so the decompiler can tell that an unknown incoming flag byte cannot reach
+# PSW[11:7] and drops the flags from tests of those bits.
+macro packpsw() {
+	psw = (psw & 0x0f80) | zext(Z8 & 1) | (zext(Z16 & 1) << 1) | (zext(CY & 1) << 2) |
+		(zext(HC & 1) << 3) | (zext(OV & 1) << 4) | (zext(PT & 1) << 5) | (zext(S & 1) << 6) |
+		(zext(RXI & 0xf) << 12);
+}
+
+macro unpackpsw() {
+	Z8 = (psw & 0x01) != 0;
+	Z16 = (psw & 0x02) != 0;
+	CY = (psw & 0x04) != 0;
+	HC = (psw & 0x08) != 0;
+	OV = (psw & 0x10) != 0;
+	PT = (psw & 0x20) != 0;
+	S = (psw & 0x40) != 0;
+	local rx:2 = psw >> 12;
+	RXI = rx:1;
+}
+
+# CGEN set-psw with Rd = psw: the value written keeps its CY, HC, OV and PSW[11:7] bits.
+macro pswkeep() {
+	CY = (psw & 0x04) != 0;
+	HC = (psw & 0x08) != 0;
+	OV = (psw & 0x10) != 0;
+	packpsw();
+}
+
+# CGEN set-psw-add/-sub/-carry with Rd = psw: the new PSW is built from the old one, the
+# result is lost.
+macro pswold() {
+	psw = PSWO;
+	packpsw();
+}
+
+# Before: pack when Rd or Rs is psw (PD: Rd only, for forms whose Rs field is an immediate).
+# PSWO keeps the packed PSW for pswold().
+PI: is Rdn=14 | Rsn=14 { packpsw(); PSWO = psw; }
+PI: is epsilon { }
+PD: is Rdn=14 { packpsw(); PSWO = psw; }
+PD: is epsilon { }
+PS: is Rsn=14 { packpsw(); }
+PS: is epsilon { }
+
+# After an instruction that writes Rd with CGEN set-psw (QW, QWD) or set-psw-add/-sub/
+# -carry (QA, QAD), or writes no register (QC, QS): leave psw packed when it was involved.
+QW: is Rdn=14 { pswkeep(); }
+QW: is Rsn=14 { packpsw(); }
+QW: is epsilon { }
+QWD: is Rdn=14 { pswkeep(); }
+QWD: is epsilon { }
+QA: is Rdn=14 { pswold(); }
+QA: is Rsn=14 { packpsw(); }
+QA: is epsilon { }
+QAD: is Rdn=14 { pswold(); }
+QAD: is epsilon { }
+QC: is Rdn=14 | Rsn=14 { packpsw(); }
+QC: is epsilon { }
+QS: is Rsn=14 { packpsw(); }
+QS: is epsilon { }
+
+# Rx with RXI = 14 is psw. Which register Rx is is not known at decode time, so these pack
+# unconditionally (valid whatever RXI is: the packed PSW is the real one) and pick the
+# written value's bits with a select on RXI. CGEN's set-psw for the Rx forms reads the Rx
+# index (Rpsw) again after writing Rx, so with Rx = psw the new RXI is the written value's
+# top nibble: 0 after mov/and Rx,#imm8, still 14 after or/xor.
+XI: is epsilon { packpsw(); PSWO = psw; }
+XW: is epsilon {
+	local w:1 = RXI == 14;
+	CY = (w && ((psw & 0x04) != 0)) || (!w && CY);
+	HC = (w && ((psw & 0x08) != 0)) || (!w && HC);
+	OV = (w && ((psw & 0x10) != 0)) || (!w && OV);
+	local rx:2 = psw >> 12;
+	RXI = (w * rx:1) | (!w * RXI);
+	packpsw();
+}
+XA: is epsilon { pswold(); }
+XC: is epsilon { packpsw(); }
+
+# swpw: CGEN writes Rs first, then Rd with set-psw, so either one being psw keeps the value's
+# CY, HC and OV. bn/bp set RXI before testing Rd, so Rd = psw is tested packed (QCD; QC
+# covers Rs = psw too). pop psw unpacks the popped value (QU).
+QWW: is Rdn=14 | Rsn=14 { pswkeep(); }
+QWW: is epsilon { }
+QCD: is Rdn=14 { packpsw(); }
+QCD: is epsilon { }
+QU: is Rdn=14 { unpackpsw(); }
+QU: is epsilon { }
+
+# Forms that read Rx: Rx may be psw, so XI packed it; the instruction then sets RXI, so it
+# is packed again (or, with Rd = psw, the written value's CY, HC and OV are kept).
+QX: is Rdn=14 { pswkeep(); }
+QX: is epsilon { packpsw(); }
+
+# Rb = psw in the indexed far moves (Rb is field 6 of the second word): pack before (PB) and
+# after (QB) reading it, unpack after the carry from Rs++/--Rs is propagated into it (UB).
+PB: is Rbn=6 { packpsw(); }
+PB: is epsilon { }
+QB: is Rbn=6 { packpsw(); }
+QB: is epsilon { }
+UB: is Rbn=6 { unpackpsw(); }
+UB: is epsilon { }
 
 #
 # Operand subtables
@@ -152,6 +269,8 @@ rel8_2: dest is simm8 [ dest = inst_start + 2 + simm8; ]   { export *:4 dest; }
 rel8_4: dest is simm8 [ dest = inst_start + 4 + simm8; ]   { export *:4 dest; }
 rel12:  dest is simm12 [ dest = inst_start + 4 + simm12; ] { export *:4 dest; }
 rel12a: dest is srel11 [ dest = inst_start + 2 + srel11 * 2; ] { export *:4 dest; }
+# The reset vector (pspec RESET): a software reset restarts there.
+resetvec: dest is epsilon [ dest = 0x8000; ] { export *[code]:4 dest; }
 abs24:  dest is imm8 ; imm16 [ dest = (imm16 << 8) | imm8; ] { export *:4 dest; }
 
 # Branch conditions; cc2 sits in the first word, cc5 in the second.
@@ -201,89 +320,108 @@ ldf: ".w" is op2m=1 & Rdm & Rdmn { Rdm = *[code]:2 (EA & 0xfffffffe); flagsw(Rdm
 stf: ".b" is op2m=0 & Rdm & Rdmn { *[code]:1 EA = Rdm:1; flagsb(Rdm); RXI = Rdmn; }
 stf: ".w" is op2m=1 & Rdm & Rdmn { *[code]:2 (EA & 0xfffffffe) = Rdm; flagsw(Rdm); RXI = Rdmn; }
 
+# Stores split into the store (stv, stfv) and the flags (stz), for the forms where CGEN sets
+# the flags first: movf (--Rs),Rdm takes them from Rdm before the decrement
+# (movfgripredecgr), which differs from the stored value when Rs is Rdm; the other
+# predecrement stores set them after the decrement but compute the address after the flags,
+# which matters when Rs is psw.
+stv: ".b" is op2m=0 & Rdm { *[ram]:1 NA = Rdm:1; }
+stv: ".w" is op2m=1 & Rdm { *[ram]:2 (NA & 0xfffe) = Rdm; }
+stfv: ".b" is op2m=0 & Rdm { *[code]:1 EA = Rdm:1; }
+stfv: ".w" is op2m=1 & Rdm { *[code]:2 (EA & 0xfffffffe) = Rdm; }
+stz: is op2m=0 & Rdm & Rdmn { flagsb(Rdm); RXI = Rdmn; }
+stz: is op2m=1 & Rdm & Rdmn { flagsw(Rdm); RXI = Rdmn; }
+
+# Post-increment and pre-decrement of Rs; with Rs = psw the PSW is packed, stepped and
+# unpacked again.
+IS: is Rsn=14 & op2m { packpsw(); psw = psw + 1 + op2m; unpackpsw(); }
+IS: is Rs & op2m { Rs = Rs + 1 + op2m; }
+DS: is Rsn=14 & op2m { packpsw(); psw = psw - (1 + op2m); unpackpsw(); }
+DS: is Rs & op2m { Rs = Rs - (1 + op2m); }
+
 #
 # Moves between registers and memory addressed by a register
 #
 
-:mov^ld Rdm,"("^Rs^")" is op1=7 & op2a=0 & ld & Rs & op2m & op4m=0 & Rdm {
-	NA = Rs; build ld;
+:mov^ld Rdm,"("^Rs^")" is op1=7 & op2a=0 & ld & Rs & op2m & op4m=0 & Rdm & PS & QS {
+	build PS; NA = Rs; build ld; build QS;
 }
-:mov^ld Rdm,"("^Rs^"++)" is op1=6 & op2a=0 & ld & Rs & op2m & op4m=0 & Rdm {
-	NA = Rs; build ld; Rs = Rs + 1 + op2m;
+:mov^ld Rdm,"("^Rs^"++)" is op1=6 & op2a=0 & ld & Rs & op2m & op4m=0 & Rdm & PS & IS {
+	build PS; NA = Rs; build ld; build IS;
 }
-:mov^ld Rdm,"(--"^Rs^")" is op1=6 & op2a=4 & ld & Rs & op2m & op4m=0 & Rdm {
-	Rs = Rs - (1 + op2m); NA = Rs; build ld;
+:mov^ld Rdm,"(--"^Rs^")" is op1=6 & op2a=4 & ld & Rs & op2m & op4m=0 & Rdm & DS & QS {
+	build DS; NA = Rs; build ld; build QS;
 }
-:mov^st "("^Rs^")",Rdm is op1=7 & op2a=1 & st & Rs & op2m & op4m=0 & Rdm {
-	NA = Rs; build st;
+:mov^st "("^Rs^")",Rdm is op1=7 & op2a=1 & st & Rs & op2m & op4m=0 & Rdm & PS & QS {
+	build PS; NA = Rs; build st; build QS;
 }
-:mov^st "("^Rs^"++)",Rdm is op1=6 & op2a=1 & st & Rs & op2m & op4m=0 & Rdm {
-	NA = Rs; build st; Rs = Rs + 1 + op2m;
+:mov^st "("^Rs^"++)",Rdm is op1=6 & op2a=1 & st & Rs & op2m & op4m=0 & Rdm & PS & IS {
+	build PS; NA = Rs; build st; build IS;
 }
-:mov^st "(--"^Rs^")",Rdm is op1=6 & op2a=5 & st & Rs & op2m & op4m=0 & Rdm {
-	Rs = Rs - (1 + op2m); NA = Rs; build st;
+:mov^stv "(--"^Rs^")",Rdm is op1=6 & op2a=5 & stv & stz & Rs & op2m & op4m=0 & Rdm & DS & QS {
+	build DS; build stz; build QS; NA = Rs; build stv;
 }
 
-:mov^ld Rdm,"("^Rs^","^simm12^")" is op1=7 & op2a=0 & ld & Rs & op2m & op4m=1 & Rdm ; op5=0 & simm12 {
-	NA = Rs + simm12; build ld;
+:mov^ld Rdm,"("^Rs^","^simm12^")" is op1=7 & op2a=0 & ld & Rs & op2m & op4m=1 & Rdm & PS & QS ; op5=0 & simm12 {
+	build PS; NA = Rs + simm12; build ld; build QS;
 }
-:mov^ld Rdm,"("^Rs^"++,"^simm12^")" is op1=6 & op2a=0 & ld & Rs & op2m & op4m=1 & Rdm ; op5=0 & simm12 {
-	NA = Rs + simm12; build ld; Rs = Rs + 1 + op2m;
+:mov^ld Rdm,"("^Rs^"++,"^simm12^")" is op1=6 & op2a=0 & ld & Rs & op2m & op4m=1 & Rdm & PS & IS ; op5=0 & simm12 {
+	build PS; NA = Rs + simm12; build ld; build IS;
 }
-:mov^ld Rdm,"(--"^Rs^","^simm12^")" is op1=6 & op2a=4 & ld & Rs & op2m & op4m=1 & Rdm ; op5=0 & simm12 {
-	Rs = Rs - (1 + op2m); NA = Rs + simm12; build ld;
+:mov^ld Rdm,"(--"^Rs^","^simm12^")" is op1=6 & op2a=4 & ld & Rs & op2m & op4m=1 & Rdm & DS & QS ; op5=0 & simm12 {
+	build DS; NA = Rs + simm12; build ld; build QS;
 }
-:mov^st "("^Rs^","^simm12^")",Rdm is op1=7 & op2a=1 & st & Rs & op2m & op4m=1 & Rdm ; op5=0 & simm12 {
-	NA = Rs + simm12; build st;
+:mov^st "("^Rs^","^simm12^")",Rdm is op1=7 & op2a=1 & st & Rs & op2m & op4m=1 & Rdm & PS & QS ; op5=0 & simm12 {
+	build PS; NA = Rs + simm12; build st; build QS;
 }
-:mov^st "("^Rs^"++,"^simm12^")",Rdm is op1=6 & op2a=1 & st & Rs & op2m & op4m=1 & Rdm ; op5=0 & simm12 {
-	NA = Rs + simm12; build st; Rs = Rs + 1 + op2m;
+:mov^st "("^Rs^"++,"^simm12^")",Rdm is op1=6 & op2a=1 & st & Rs & op2m & op4m=1 & Rdm & PS & IS ; op5=0 & simm12 {
+	build PS; NA = Rs + simm12; build st; build IS;
 }
-:mov^st "(--"^Rs^","^simm12^")",Rdm is op1=6 & op2a=5 & st & Rs & op2m & op4m=1 & Rdm ; op5=0 & simm12 {
-	Rs = Rs - (1 + op2m); NA = Rs + simm12; build st;
+:mov^stv "(--"^Rs^","^simm12^")",Rdm is op1=6 & op2a=5 & stv & stz & Rs & op2m & op4m=1 & Rdm & DS & QS ; op5=0 & simm12 {
+	build DS; build stz; build QS; NA = Rs + simm12; build stv;
 }
 
 # Far moves: the address is r8:Rs, or Rb:Rs plus a displacement.
-:movf^ldf Rdm,"("^Rs^")" is op1=7 & op2a=2 & ldf & Rs & op2m & op4m=0 & Rdm {
-	EA = (zext(r8) << 16) | zext(Rs); build ldf;
+:movf^ldf Rdm,"("^Rs^")" is op1=7 & op2a=2 & ldf & Rs & op2m & op4m=0 & Rdm & PS & QS {
+	build PS; EA = (zext(r8) << 16) | zext(Rs); build ldf; build QS;
 }
-:movf^ldf Rdm,"("^Rs^"++)" is op1=6 & op2a=2 & ldf & Rs & op2m & op4m=0 & Rdm {
-	EA = (zext(r8) << 16) | zext(Rs); build ldf; Rs = Rs + 1 + op2m;
+:movf^ldf Rdm,"("^Rs^"++)" is op1=6 & op2a=2 & ldf & Rs & op2m & op4m=0 & Rdm & PS & IS {
+	build PS; EA = (zext(r8) << 16) | zext(Rs); build ldf; build IS;
 }
-:movf^ldf Rdm,"(--"^Rs^")" is op1=6 & op2a=6 & ldf & Rs & op2m & op4m=0 & Rdm {
-	Rs = Rs - (1 + op2m); EA = (zext(r8) << 16) | zext(Rs); build ldf;
+:movf^ldf Rdm,"(--"^Rs^")" is op1=6 & op2a=6 & ldf & Rs & op2m & op4m=0 & Rdm & DS & QS {
+	build DS; EA = (zext(r8) << 16) | zext(Rs); build ldf; build QS;
 }
-:movf^stf "("^Rs^")",Rdm is op1=7 & op2a=3 & stf & Rs & op2m & op4m=0 & Rdm {
-	EA = (zext(r8) << 16) | zext(Rs); build stf;
+:movf^stf "("^Rs^")",Rdm is op1=7 & op2a=3 & stf & Rs & op2m & op4m=0 & Rdm & PS & QS {
+	build PS; EA = (zext(r8) << 16) | zext(Rs); build stf; build QS;
 }
-:movf^stf "("^Rs^"++)",Rdm is op1=6 & op2a=3 & stf & Rs & op2m & op4m=0 & Rdm {
-	EA = (zext(r8) << 16) | zext(Rs); build stf; Rs = Rs + 1 + op2m;
+:movf^stf "("^Rs^"++)",Rdm is op1=6 & op2a=3 & stf & Rs & op2m & op4m=0 & Rdm & PS & IS {
+	build PS; EA = (zext(r8) << 16) | zext(Rs); build stf; build IS;
 }
-:movf^stf "(--"^Rs^")",Rdm is op1=6 & op2a=7 & stf & Rs & op2m & op4m=0 & Rdm {
-	Rs = Rs - (1 + op2m); EA = (zext(r8) << 16) | zext(Rs); build stf;
+:movf^stfv "(--"^Rs^")",Rdm is op1=6 & op2a=7 & stfv & stz & Rs & op2m & op4m=0 & Rdm & DS {
+	build stz; build DS; EA = (zext(r8) << 16) | zext(Rs); build stfv;
 }
 
-:movf^ldf Rdm,"("^Rb^","^Rs^","^simm12^")" is op1=7 & op2a=2 & ldf & Rs & op2m & op4m=1 & Rdm ; op5a=0 & Rb & simm12 {
-	EA = ((zext(Rb) << 16) | zext(Rs)) + simm12; build ldf;
+:movf^ldf Rdm,"("^Rb^","^Rs^","^simm12^")" is op1=7 & op2a=2 & ldf & Rs & op2m & op4m=1 & Rdm & PS & QS ; op5a=0 & Rb & simm12 & PB & QB {
+	build PS; build PB; EA = ((zext(Rb) << 16) | zext(Rs)) + simm12; build ldf; build QS; build QB;
 }
-:movf^ldf Rdm,"("^Rb^","^Rs^"++,"^simm12^")" is op1=6 & op2a=2 & ldf & Rs & op2m & op4m=1 & Rdm ; op5a=0 & Rb & simm12 {
-	EA = ((zext(Rb) << 16) | zext(Rs)) + simm12; build ldf;
-	Rs = Rs + 1 + op2m; Rb = Rb + zext(Rs == 0);
+:movf^ldf Rdm,"("^Rb^","^Rs^"++,"^simm12^")" is op1=6 & op2a=2 & ldf & Rs & op2m & op4m=1 & Rdm & PS & IS ; op5a=0 & Rb & simm12 & PB & QB & UB {
+	build PS; build PB; EA = ((zext(Rb) << 16) | zext(Rs)) + simm12; build ldf;
+	build IS; build QB; Rb = Rb + zext(Rs == 0); build UB;
 }
-:movf^ldf Rdm,"("^Rb^",--"^Rs^","^simm12^")" is op1=6 & op2a=6 & ldf & Rs & op2m & op4m=1 & Rdm ; op5a=0 & Rb & simm12 {
-	Rb = Rb - zext(Rs == 0); Rs = Rs - (1 + op2m);
-	EA = ((zext(Rb) << 16) | zext(Rs)) + simm12; build ldf;
+:movf^ldf Rdm,"("^Rb^",--"^Rs^","^simm12^")" is op1=6 & op2a=6 & ldf & Rs & op2m & op4m=1 & Rdm & PS & DS & QS ; op5a=0 & Rb & simm12 & PB & QB & UB {
+	build PS; build PB; Rb = Rb - zext(Rs == 0); build UB; build DS;
+	EA = ((zext(Rb) << 16) | zext(Rs)) + simm12; build ldf; build QS; build QB;
 }
-:movf^stf "("^Rb^","^Rs^","^simm12^")",Rdm is op1=7 & op2a=3 & stf & Rs & op2m & op4m=1 & Rdm ; op5a=0 & Rb & simm12 {
-	EA = ((zext(Rb) << 16) | zext(Rs)) + simm12; build stf;
+:movf^stf "("^Rb^","^Rs^","^simm12^")",Rdm is op1=7 & op2a=3 & stf & Rs & op2m & op4m=1 & Rdm & PS & QS ; op5a=0 & Rb & simm12 & PB & QB {
+	build PS; build PB; EA = ((zext(Rb) << 16) | zext(Rs)) + simm12; build stf; build QS; build QB;
 }
-:movf^stf "("^Rb^","^Rs^"++,"^simm12^")",Rdm is op1=6 & op2a=3 & stf & Rs & op2m & op4m=1 & Rdm ; op5a=0 & Rb & simm12 {
-	EA = ((zext(Rb) << 16) | zext(Rs)) + simm12; build stf;
-	Rs = Rs + 1 + op2m; Rb = Rb + zext(Rs == 0);
+:movf^stf "("^Rb^","^Rs^"++,"^simm12^")",Rdm is op1=6 & op2a=3 & stf & Rs & op2m & op4m=1 & Rdm & PS & IS ; op5a=0 & Rb & simm12 & PB & QB & UB {
+	build PS; build PB; EA = ((zext(Rb) << 16) | zext(Rs)) + simm12; build stf;
+	build IS; build QB; Rb = Rb + zext(Rs == 0); build UB;
 }
-:movf^stf "("^Rb^",--"^Rs^","^simm12^")",Rdm is op1=6 & op2a=7 & stf & Rs & op2m & op4m=1 & Rdm ; op5a=0 & Rb & simm12 {
-	Rb = Rb - zext(Rs == 0); Rs = Rs - (1 + op2m);
-	EA = ((zext(Rb) << 16) | zext(Rs)) + simm12; build stf;
+:movf^stfv "("^Rb^",--"^Rs^","^simm12^")",Rdm is op1=6 & op2a=7 & stfv & stz & Rs & op2m & op4m=1 & Rdm & PS & DS & QS ; op5a=0 & Rb & simm12 & PB & QB & UB {
+	build PS; build PB; Rb = Rb - zext(Rs == 0); build UB; build DS; build stz; build QS; build QB;
+	EA = ((zext(Rb) << 16) | zext(Rs)) + simm12; build stfv;
 }
 
 #
@@ -308,63 +446,63 @@ stf: ".w" is op2m=1 & Rdm & Rdmn { *[code]:2 (EA & 0xfffffffe) = Rdm; flagsw(Rdm
 # Register moves and immediates
 #
 
-:mov Rd,Rs is op1=4 & op2=6 & Rs & Rd & Rdn { Rd = Rs; flagsw(Rd); RXI = Rdn; }
-:mov RX,"#"^imm8 is op1=4 & op2=7 & imm8 & RX { RX = imm8; flagsw(RX); }
+:mov Rd,Rs is op1=4 & op2=6 & Rs & Rd & Rdn & PI & QW { build PI; Rd = Rs; flagsw(Rd); RXI = Rdn; build QW; }
+:mov RX,"#"^imm8 is op1=4 & op2=7 & imm8 & RX & XW { RX = imm8; flagsw(RX); build XW; }
 :mov Rm,"#"^imm8 is op1=2 & Rm & Rmn & op2m=1 & imm8 { Rm = imm8; flagsw(Rm); RXI = Rmn; }
-:mov Rd,"#"^imm16 is op1=3 & op2=1 & op3=3 & Rd & Rdn ; imm16 { Rd = imm16; flagsw(Rd); RXI = Rdn; }
-:mov.b Rd,"RxL" is op1=3 & op2=0 & op3=12 & Rd & Rdn & RX { Rd = (Rd & 0xff00) | (RX & 0xff); flagsb(Rd); RXI = Rdn; }
-:mov.b Rd,"RxH" is op1=3 & op2=0 & op3=13 & Rd & Rdn & RX { Rd = (Rd & 0x00ff) | (RX & 0xff00); flagsw(Rd); RXI = Rdn; }
+:mov Rd,"#"^imm16 is op1=3 & op2=1 & op3=3 & Rd & Rdn & QWD ; imm16 { Rd = imm16; flagsw(Rd); RXI = Rdn; build QWD; }
+:mov.b Rd,"RxL" is op1=3 & op2=0 & op3=12 & Rd & Rdn & RX & XI & QX { build XI; Rd = (Rd & 0xff00) | (RX & 0xff); flagsb(Rd); RXI = Rdn; build QX; }
+:mov.b Rd,"RxH" is op1=3 & op2=0 & op3=13 & Rd & Rdn & RX & XI & QX { build XI; Rd = (Rd & 0x00ff) | (RX & 0xff00); flagsw(Rd); RXI = Rdn; build QX; }
 
-:mask Rd,Rs is op1=3 & op2=3 & Rs & Rd & Rdn & RX { Rd = (Rd & ~Rs) | (RX & Rs); flagsw(Rd); RXI = Rdn; }
-:mask Rd,"#"^imm16 is op1=3 & op2=0 & op3=14 & Rd & Rdn & RX ; imm16 { Rd = (Rd & ~imm16) | (RX & imm16); flagsw(Rd); RXI = Rdn; }
+:mask Rd,Rs is op1=3 & op2=3 & Rs & Rd & Rdn & RX & XI & QX { build XI; Rd = (Rd & ~Rs) | (RX & Rs); flagsw(Rd); RXI = Rdn; build QX; }
+:mask Rd,"#"^imm16 is op1=3 & op2=0 & op3=14 & Rd & Rdn & RX & XI & QX ; imm16 { build XI; Rd = (Rd & ~imm16) | (RX & imm16); flagsw(Rd); RXI = Rdn; build QX; }
 
-:push Rd is op1=0 & op2=0 & op3=8 & Rd { *[ram]:2 sp = Rd; sp = sp + 2; }
-:pop Rd  is op1=0 & op2=0 & op3=9 & Rd { sp = sp - 2; Rd = *[ram]:2 sp; }
+:push Rd is op1=0 & op2=0 & op3=8 & Rd & PD { build PD; *[ram]:2 sp = Rd; sp = sp + 2; }
+:pop Rd  is op1=0 & op2=0 & op3=9 & Rd & QU { sp = sp - 2; Rd = *[ram]:2 sp; build QU; }
 
-:swpn Rd    is op1=3 & op2=0 & op3=9 & Rd & Rdn { Rd = ((Rd << 4) & 0xf0) | ((Rd >> 4) & 0x0f) | (Rd & 0xff00); flagsb(Rd); RXI = Rdn; }
-:swpb Rd    is op1=3 & op2=0 & op3=8 & Rd & Rdn { Rd = (Rd << 8) | (Rd >> 8); flagsw(Rd); RXI = Rdn; }
-:swpw Rd,Rs is op1=3 & op2=2 & Rs & Rd & Rdn { local t:2 = Rs; Rs = Rd; Rd = t; flagsw(Rd); RXI = Rdn; }
+:swpn Rd    is op1=3 & op2=0 & op3=9 & Rd & Rdn & PD & QWD { build PD; Rd = ((Rd << 4) & 0xf0) | ((Rd >> 4) & 0x0f) | (Rd & 0xff00); flagsb(Rd); RXI = Rdn; build QWD; }
+:swpb Rd    is op1=3 & op2=0 & op3=8 & Rd & Rdn & PD & QWD { build PD; Rd = (Rd << 8) | (Rd >> 8); flagsw(Rd); RXI = Rdn; build QWD; }
+:swpw Rd,Rs is op1=3 & op2=2 & Rs & Rd & Rdn & PI & QWW { build PI; local t:2 = Rs; Rs = Rd; Rd = t; flagsw(Rd); RXI = Rdn; build QWW; }
 
 #
 # Logical
 #
 
-:and Rd,Rs         is op1=4 & op2=0 & Rs & Rd & Rdn { Rd = Rd & Rs; flagsw(Rd); RXI = Rdn; }
-:and RX,"#"^imm8   is op1=4 & op2=1 & imm8 & RX { RX = RX & imm8; flagsw(RX); }
-:and Rd,"#"^imm16  is op1=3 & op2=1 & op3=0 & Rd & Rdn ; imm16 { Rd = Rd & imm16; flagsw(Rd); RXI = Rdn; }
-:or Rd,Rs          is op1=4 & op2=2 & Rs & Rd & Rdn { Rd = Rd | Rs; flagsw(Rd); RXI = Rdn; }
-:or RX,"#"^imm8    is op1=4 & op2=3 & imm8 & RX { RX = RX | imm8; flagsw(RX); }
-:or Rd,"#"^imm16   is op1=3 & op2=1 & op3=1 & Rd & Rdn ; imm16 { Rd = Rd | imm16; flagsw(Rd); RXI = Rdn; }
-:xor Rd,Rs         is op1=4 & op2=4 & Rs & Rd & Rdn { Rd = Rd ^ Rs; flagsw(Rd); RXI = Rdn; }
-:xor RX,"#"^imm8   is op1=4 & op2=5 & imm8 & RX { RX = RX ^ imm8; flagsw(RX); }
-:xor Rd,"#"^imm16  is op1=3 & op2=1 & op3=2 & Rd & Rdn ; imm16 { Rd = Rd ^ imm16; flagsw(Rd); RXI = Rdn; }
-:not Rd            is op1=3 & op2=0 & op3=11 & Rd & Rdn { Rd = ~Rd; flagsw(Rd); RXI = Rdn; }
+:and Rd,Rs         is op1=4 & op2=0 & Rs & Rd & Rdn & PI & QW { build PI; Rd = Rd & Rs; flagsw(Rd); RXI = Rdn; build QW; }
+:and RX,"#"^imm8   is op1=4 & op2=1 & imm8 & RX & XI & XW { build XI; RX = RX & imm8; flagsw(RX); build XW; }
+:and Rd,"#"^imm16  is op1=3 & op2=1 & op3=0 & Rd & Rdn & PD & QWD ; imm16 { build PD; Rd = Rd & imm16; flagsw(Rd); RXI = Rdn; build QWD; }
+:or Rd,Rs          is op1=4 & op2=2 & Rs & Rd & Rdn & PI & QW { build PI; Rd = Rd | Rs; flagsw(Rd); RXI = Rdn; build QW; }
+:or RX,"#"^imm8    is op1=4 & op2=3 & imm8 & RX & XI & XW { build XI; RX = RX | imm8; flagsw(RX); build XW; }
+:or Rd,"#"^imm16   is op1=3 & op2=1 & op3=1 & Rd & Rdn & PD & QWD ; imm16 { build PD; Rd = Rd | imm16; flagsw(Rd); RXI = Rdn; build QWD; }
+:xor Rd,Rs         is op1=4 & op2=4 & Rs & Rd & Rdn & PI & QW { build PI; Rd = Rd ^ Rs; flagsw(Rd); RXI = Rdn; build QW; }
+:xor RX,"#"^imm8   is op1=4 & op2=5 & imm8 & RX & XI & XW { build XI; RX = RX ^ imm8; flagsw(RX); build XW; }
+:xor Rd,"#"^imm16  is op1=3 & op2=1 & op3=2 & Rd & Rdn & PD & QWD ; imm16 { build PD; Rd = Rd ^ imm16; flagsw(Rd); RXI = Rdn; build QWD; }
+:not Rd            is op1=3 & op2=0 & op3=11 & Rd & Rdn & PD & QWD { build PD; Rd = ~Rd; flagsw(Rd); RXI = Rdn; build QWD; }
 
 #
 # Arithmetic
 #
 
-:add Rd,Rs        is op1=4 & op2=9 & Rs & Rd & Rdn { addf(Rd, Rd, Rs, 0:1); RXI = Rdn; }
-:add Rd,"#"^imm4  is op1=5 & op2=1 & imm4 & Rd & Rdn { local b:2 = imm4; addf(Rd, Rd, b, 0:1); RXI = Rdn; }
-:add RX,"#"^imm8  is op1=5 & op2=9 & imm8 & RX { local b:2 = imm8; addf(RX, RX, b, 0:1); }
-:add Rd,"#"^imm16 is op1=3 & op2=1 & op3=4 & Rd & Rdn ; imm16 { local b:2 = imm16; addf(Rd, Rd, b, 0:1); RXI = Rdn; }
-:adc Rd,Rs        is op1=4 & op2=11 & Rs & Rd & Rdn { addf(Rd, Rd, Rs, CY); RXI = Rdn; }
-:adc Rd,"#"^imm4  is op1=5 & op2=3 & imm4 & Rd & Rdn { local b:2 = imm4; addf(Rd, Rd, b, CY); RXI = Rdn; }
-:adc RX,"#"^imm8  is op1=5 & op2=11 & imm8 & RX { local b:2 = imm8; addf(RX, RX, b, CY); }
-:adc Rd,"#"^imm16 is op1=3 & op2=1 & op3=5 & Rd & Rdn ; imm16 { local b:2 = imm16; addf(Rd, Rd, b, CY); RXI = Rdn; }
-:sub Rd,Rs        is op1=4 & op2=13 & Rs & Rd & Rdn { subf(Rd, Rd, Rs, 0:1); RXI = Rdn; }
-:sub Rd,"#"^imm4  is op1=5 & op2=5 & imm4 & Rd & Rdn { local b:2 = imm4; subf(Rd, Rd, b, 0:1); RXI = Rdn; }
-:sub RX,"#"^imm8  is op1=5 & op2=13 & imm8 & RX { local b:2 = imm8; subf(RX, RX, b, 0:1); }
-:sub Rd,"#"^imm16 is op1=3 & op2=1 & op3=6 & Rd & Rdn ; imm16 { local b:2 = imm16; subf(Rd, Rd, b, 0:1); RXI = Rdn; }
-:sbc Rd,Rs        is op1=4 & op2=15 & Rs & Rd & Rdn { subf(Rd, Rd, Rs, CY); RXI = Rdn; }
-:sbc Rd,"#"^imm4  is op1=5 & op2=7 & imm4 & Rd & Rdn { local b:2 = imm4; subf(Rd, Rd, b, CY); RXI = Rdn; }
-:sbc RX,"#"^imm8  is op1=5 & op2=15 & imm8 & RX { local b:2 = imm8; subf(RX, RX, b, CY); }
-:sbc Rd,"#"^imm16 is op1=3 & op2=1 & op3=7 & Rd & Rdn ; imm16 { local b:2 = imm16; subf(Rd, Rd, b, CY); RXI = Rdn; }
+:add Rd,Rs        is op1=4 & op2=9 & Rs & Rd & Rdn & PI & QA { build PI; addf(Rd, Rd, Rs, 0:1); RXI = Rdn; build QA; }
+:add Rd,"#"^imm4  is op1=5 & op2=1 & imm4 & Rd & Rdn & PD & QAD { build PD; local b:2 = imm4; addf(Rd, Rd, b, 0:1); RXI = Rdn; build QAD; }
+:add RX,"#"^imm8  is op1=5 & op2=9 & imm8 & RX & XI & XA { build XI; local b:2 = imm8; addf(RX, RX, b, 0:1); build XA; }
+:add Rd,"#"^imm16 is op1=3 & op2=1 & op3=4 & Rd & Rdn & PD & QAD ; imm16 { build PD; local b:2 = imm16; addf(Rd, Rd, b, 0:1); RXI = Rdn; build QAD; }
+:adc Rd,Rs        is op1=4 & op2=11 & Rs & Rd & Rdn & PI & QA { build PI; addf(Rd, Rd, Rs, CY); RXI = Rdn; build QA; }
+:adc Rd,"#"^imm4  is op1=5 & op2=3 & imm4 & Rd & Rdn & PD & QAD { build PD; local b:2 = imm4; addf(Rd, Rd, b, CY); RXI = Rdn; build QAD; }
+:adc RX,"#"^imm8  is op1=5 & op2=11 & imm8 & RX & XI & XA { build XI; local b:2 = imm8; addf(RX, RX, b, CY); build XA; }
+:adc Rd,"#"^imm16 is op1=3 & op2=1 & op3=5 & Rd & Rdn & PD & QAD ; imm16 { build PD; local b:2 = imm16; addf(Rd, Rd, b, CY); RXI = Rdn; build QAD; }
+:sub Rd,Rs        is op1=4 & op2=13 & Rs & Rd & Rdn & PI & QA { build PI; subf(Rd, Rd, Rs, 0:1); RXI = Rdn; build QA; }
+:sub Rd,"#"^imm4  is op1=5 & op2=5 & imm4 & Rd & Rdn & PD & QAD { build PD; local b:2 = imm4; subf(Rd, Rd, b, 0:1); RXI = Rdn; build QAD; }
+:sub RX,"#"^imm8  is op1=5 & op2=13 & imm8 & RX & XI & XA { build XI; local b:2 = imm8; subf(RX, RX, b, 0:1); build XA; }
+:sub Rd,"#"^imm16 is op1=3 & op2=1 & op3=6 & Rd & Rdn & PD & QAD ; imm16 { build PD; local b:2 = imm16; subf(Rd, Rd, b, 0:1); RXI = Rdn; build QAD; }
+:sbc Rd,Rs        is op1=4 & op2=15 & Rs & Rd & Rdn & PI & QA { build PI; subf(Rd, Rd, Rs, CY); RXI = Rdn; build QA; }
+:sbc Rd,"#"^imm4  is op1=5 & op2=7 & imm4 & Rd & Rdn & PD & QAD { build PD; local b:2 = imm4; subf(Rd, Rd, b, CY); RXI = Rdn; build QAD; }
+:sbc RX,"#"^imm8  is op1=5 & op2=15 & imm8 & RX & XI & XA { build XI; local b:2 = imm8; subf(RX, RX, b, CY); build XA; }
+:sbc Rd,"#"^imm16 is op1=3 & op2=1 & op3=7 & Rd & Rdn & PD & QAD ; imm16 { build PD; local b:2 = imm16; subf(Rd, Rd, b, CY); RXI = Rdn; build QAD; }
 
-:inc Rd           is op1=3 & op2=0 & op3a=0 & imm2=0 & Rd & Rdn { Rd = Rd + 1; flagsw(Rd); RXI = Rdn; }
-:inc Rd,"#"^imm2  is op1=3 & op2=0 & op3a=0 & imm2 & Rd & Rdn { Rd = Rd + imm2 + 1; flagsw(Rd); RXI = Rdn; }
-:dec Rd           is op1=3 & op2=0 & op3a=1 & imm2=0 & Rd & Rdn { Rd = Rd - 1; flagsw(Rd); RXI = Rdn; }
-:dec Rd,"#"^imm2  is op1=3 & op2=0 & op3a=1 & imm2 & Rd & Rdn { Rd = Rd - (imm2 + 1); flagsw(Rd); RXI = Rdn; }
+:inc Rd           is op1=3 & op2=0 & op3a=0 & imm2=0 & Rd & Rdn & PD & QWD { build PD; Rd = Rd + 1; flagsw(Rd); RXI = Rdn; build QWD; }
+:inc Rd,"#"^imm2  is op1=3 & op2=0 & op3a=0 & imm2 & Rd & Rdn & PD & QWD { build PD; Rd = Rd + imm2 + 1; flagsw(Rd); RXI = Rdn; build QWD; }
+:dec Rd           is op1=3 & op2=0 & op3a=1 & imm2=0 & Rd & Rdn & PD & QWD { build PD; Rd = Rd - 1; flagsw(Rd); RXI = Rdn; build QWD; }
+:dec Rd,"#"^imm2  is op1=3 & op2=0 & op3a=1 & imm2 & Rd & Rdn & PD & QWD { build PD; Rd = Rd - (imm2 + 1); flagsw(Rd); RXI = Rdn; build QWD; }
 
 #
 # Shifts and rotates (the rotates go through the carry, 17 bits wide)
@@ -415,61 +553,63 @@ macro shlf(d, n) {
 	flagsw(d);
 }
 
-:rrc Rd,Rs       is op1=3 & op2=8 & Rs & Rd & Rdn { rrc17(Rd, Rs); RXI = Rdn; }
-:rrc Rd,"#"^imm4 is op1=3 & op2=9 & imm4 & Rd & Rdn { local n:2 = imm4; rrc17(Rd, n); RXI = Rdn; }
-:rlc Rd,Rs       is op1=3 & op2=10 & Rs & Rd & Rdn { local n:2 = Rs & 0xf; rlc17(Rd, n); RXI = Rdn; }
-:rlc Rd,"#"^imm4 is op1=3 & op2=11 & imm4 & Rd & Rdn { local n:2 = imm4; rlc17(Rd, n); RXI = Rdn; }
-:shr Rd,Rs       is op1=3 & op2=12 & Rs & Rd & Rdn { local n:2 = Rs & 0xf; shrf(Rd, n); RXI = Rdn; }
-:shr Rd,"#"^imm4 is op1=3 & op2=13 & imm4 & Rd & Rdn { local n:2 = imm4; shrf(Rd, n); RXI = Rdn; }
-:shl Rd,Rs       is op1=3 & op2=14 & Rs & Rd & Rdn { local n:2 = Rs & 0xf; shlf(Rd, n); RXI = Rdn; }
-:shl Rd,"#"^imm4 is op1=3 & op2=15 & imm4 & Rd & Rdn { local n:2 = imm4; shlf(Rd, n); RXI = Rdn; }
-:asr Rd,Rs       is op1=3 & op2=6 & Rs & Rd & Rdn { local n:2 = Rs & 0xf; asrf(Rd, n); RXI = Rdn; }
-:asr Rd,"#"^imm4 is op1=3 & op2=7 & imm4 & Rd & Rdn { local n:2 = imm4; asrf(Rd, n); RXI = Rdn; }
+:rrc Rd,Rs       is op1=3 & op2=8 & Rs & Rd & Rdn & PI & QA { build PI; rrc17(Rd, Rs); RXI = Rdn; build QA; }
+:rrc Rd,"#"^imm4 is op1=3 & op2=9 & imm4 & Rd & Rdn & PD & QAD { build PD; local n:2 = imm4; rrc17(Rd, n); RXI = Rdn; build QAD; }
+:rlc Rd,Rs       is op1=3 & op2=10 & Rs & Rd & Rdn & PI & QA { build PI; local n:2 = Rs & 0xf; rlc17(Rd, n); RXI = Rdn; build QA; }
+:rlc Rd,"#"^imm4 is op1=3 & op2=11 & imm4 & Rd & Rdn & PD & QAD { build PD; local n:2 = imm4; rlc17(Rd, n); RXI = Rdn; build QAD; }
+:shr Rd,Rs       is op1=3 & op2=12 & Rs & Rd & Rdn & PI & QA { build PI; local n:2 = Rs & 0xf; shrf(Rd, n); RXI = Rdn; build QA; }
+:shr Rd,"#"^imm4 is op1=3 & op2=13 & imm4 & Rd & Rdn & PD & QAD { build PD; local n:2 = imm4; shrf(Rd, n); RXI = Rdn; build QAD; }
+:shl Rd,Rs       is op1=3 & op2=14 & Rs & Rd & Rdn & PI & QA { build PI; local n:2 = Rs & 0xf; shlf(Rd, n); RXI = Rdn; build QA; }
+:shl Rd,"#"^imm4 is op1=3 & op2=15 & imm4 & Rd & Rdn & PD & QAD { build PD; local n:2 = imm4; shlf(Rd, n); RXI = Rdn; build QAD; }
+:asr Rd,Rs       is op1=3 & op2=6 & Rs & Rd & Rdn & PI & QA { build PI; local n:2 = Rs & 0xf; asrf(Rd, n); RXI = Rdn; build QA; }
+:asr Rd,"#"^imm4 is op1=3 & op2=7 & imm4 & Rd & Rdn & PD & QAD { build PD; local n:2 = imm4; asrf(Rd, n); RXI = Rdn; build QAD; }
 
 #
 # Bit operations
 #
 
-:set1 Rd,"#"^imm4 is op1=0 & op2=9 & imm4 & Rd & Rdn { Rd = Rd | (1 << imm4); flagsw(Rd); RXI = Rdn; }
-:set1 Rd,Rs       is op1=0 & op2=11 & Rs & Rd & Rdn { Rd = Rd | (1 << (Rs & 0xf)); flagsw(Rd); RXI = Rdn; }
-:clr1 Rd,"#"^imm4 is op1=0 & op2=8 & imm4 & Rd & Rdn { Rd = Rd & ~(1 << imm4); flagsw(Rd); RXI = Rdn; }
-:clr1 Rd,Rs       is op1=0 & op2=10 & Rs & Rd & Rdn { Rd = Rd & ~(1 << (Rs & 0xf)); flagsw(Rd); RXI = Rdn; }
+:set1 Rd,"#"^imm4 is op1=0 & op2=9 & imm4 & Rd & Rdn & PD & QWD { build PD; Rd = Rd | (1 << imm4); flagsw(Rd); RXI = Rdn; build QWD; }
+:set1 Rd,Rs       is op1=0 & op2=11 & Rs & Rd & Rdn & PI & QW { build PI; Rd = Rd | (1 << (Rs & 0xf)); flagsw(Rd); RXI = Rdn; build QW; }
+:clr1 Rd,"#"^imm4 is op1=0 & op2=8 & imm4 & Rd & Rdn & PD & QWD { build PD; Rd = Rd & ~(1 << imm4); flagsw(Rd); RXI = Rdn; build QWD; }
+:clr1 Rd,Rs       is op1=0 & op2=10 & Rs & Rd & Rdn & PI & QW { build PI; Rd = Rd & ~(1 << (Rs & 0xf)); flagsw(Rd); RXI = Rdn; build QW; }
 
 :set1 lmem,"#"^imm3 is op1=14 & imm3 & op2m=1 & lmem { local bit:1 = 1 << imm3; local v:1 = *[ram]:1 lmem | bit; *[ram]:1 lmem = v; local vw:2 = zext(v); flagsb(vw); }
 :set1 hmem,"#"^imm3 is op1=15 & imm3 & op2m=1 & hmem { local bit:1 = 1 << imm3; local v:1 = *[ram]:1 hmem | bit; *[ram]:1 hmem = v; local vw:2 = zext(v); flagsb(vw); }
 :clr1 lmem,"#"^imm3 is op1=14 & imm3 & op2m=0 & lmem { local bit:1 = 1 << imm3; local v:1 = *[ram]:1 lmem & ~bit; *[ram]:1 lmem = v; local vw:2 = zext(v); flagsb(vw); }
 :clr1 hmem,"#"^imm3 is op1=15 & imm3 & op2m=0 & hmem { local bit:1 = 1 << imm3; local v:1 = *[ram]:1 hmem & ~bit; *[ram]:1 hmem = v; local vw:2 = zext(v); flagsb(vw); }
 
-:cbw Rd is op1=3 & op2=0 & op3=10 & Rd & Rdn { Rd = sext(Rd:1); flagsw(Rd); RXI = Rdn; }
+:cbw Rd is op1=3 & op2=0 & op3=10 & Rd & Rdn & PD & QWD { build PD; Rd = sext(Rd:1); flagsw(Rd); RXI = Rdn; build QWD; }
 
-:rev Rd is op1=3 & op2=0 & op3=15 & Rd & Rdn {
+:rev Rd is op1=3 & op2=0 & op3=15 & Rd & Rdn & PD & QWD {
+	build PD;
 	local v:2 = Rd;
 	v = ((v >> 1) & 0x5555) | ((v & 0x5555) << 1);
 	v = ((v >> 2) & 0x3333) | ((v & 0x3333) << 2);
 	v = ((v >> 4) & 0x0f0f) | ((v & 0x0f0f) << 4);
 	v = (v >> 8) | (v << 8);
 	Rd = v; flagsw(Rd); RXI = Rdn;
+	build QWD;
 }
 
 #
 # Conditional branches
 #
 
-:b^cc5 Rd,Rs,rel12 is op1=0 & op2=13 & Rs & Rd & Rdn ; cc5 & rel12 {
-	cmpf(Rd, Rs); RXI = Rdn; build cc5; if (cc5) goto rel12;
+:b^cc5 Rd,Rs,rel12 is op1=0 & op2=13 & Rs & Rd & Rdn & PI & QC ; cc5 & rel12 {
+	build PI; cmpf(Rd, Rs); RXI = Rdn; build QC; build cc5; if (cc5) goto rel12;
 }
 :b^cc5 Rm,"#"^imm8,rel12 is op1=2 & Rm & Rmn & op2m=0 & imm8 ; cc5 & rel12 {
 	local b:2 = imm8; cmpf(Rm, b); RXI = Rmn; build cc5; if (cc5) goto rel12;
 }
-:b^cc2 RX,"#"^imm16,rel8_4 is op1=12 & cc2 & rel8_4 & RX ; imm16 {
-	local b:2 = imm16; cmpf(RX, b); build cc2; if (cc2) goto rel8_4;
+:b^cc2 RX,"#"^imm16,rel8_4 is op1=12 & cc2 & rel8_4 & RX & XI & XC ; imm16 {
+	build XI; local b:2 = imm16; cmpf(RX, b); build XC; build cc2; if (cc2) goto rel8_4;
 }
 :b^cc2 rel8_2 is op1=13 & cc2 & rel8_2 { build cc2; if (cc2) goto rel8_2; }
 
-:bn Rd,"#"^imm4,rel12 is op1=0 & op2=4 & imm4 & Rd & Rdn ; op5=0 & rel12 { RXI = Rdn; if ((Rd & (1 << imm4)) == 0) goto rel12; }
-:bp Rd,"#"^imm4,rel12 is op1=0 & op2=5 & imm4 & Rd & Rdn ; op5=0 & rel12 { RXI = Rdn; if ((Rd & (1 << imm4)) != 0) goto rel12; }
-:bn Rd,Rs,rel12       is op1=0 & op2=6 & Rs & Rd & Rdn ; op5=0 & rel12 { RXI = Rdn; if ((Rd & (1 << Rs)) == 0) goto rel12; }
-:bp Rd,Rs,rel12       is op1=0 & op2=7 & Rs & Rd & Rdn ; op5=0 & rel12 { RXI = Rdn; if ((Rd & (1 << Rs)) != 0) goto rel12; }
+:bn Rd,"#"^imm4,rel12 is op1=0 & op2=4 & imm4 & Rd & Rdn & QCD ; op5=0 & rel12 { RXI = Rdn; build QCD; if ((Rd & (1 << imm4)) == 0) goto rel12; }
+:bp Rd,"#"^imm4,rel12 is op1=0 & op2=5 & imm4 & Rd & Rdn & QCD ; op5=0 & rel12 { RXI = Rdn; build QCD; if ((Rd & (1 << imm4)) != 0) goto rel12; }
+:bn Rd,Rs,rel12       is op1=0 & op2=6 & Rs & Rd & Rdn & QC ; op5=0 & rel12 { RXI = Rdn; build QC; if ((Rd & (1 << Rs)) == 0) goto rel12; }
+:bp Rd,Rs,rel12       is op1=0 & op2=7 & Rs & Rd & Rdn & QC ; op5=0 & rel12 { RXI = Rdn; build QC; if ((Rd & (1 << Rs)) != 0) goto rel12; }
 
 :bn lmem,"#"^imm3b,rel12 is op1=7 & op2=12 & lmem ; op5a=0 & imm3b & rel12 { if ((*[ram]:1 lmem & (1 << imm3b)) == 0) goto rel12; }
 :bp lmem,"#"^imm3b,rel12 is op1=7 & op2=13 & lmem ; op5a=0 & imm3b & rel12 { if ((*[ram]:1 lmem & (1 << imm3b)) != 0) goto rel12; }
@@ -480,9 +620,9 @@ macro shlf(d, n) {
 # Jumps, calls and returns
 #
 
-:br Rd       is op1=0 & op2=0 & op3=2 & Rd { local rw:4 = zext(Rd); local t:4 = inst_next + rw; goto [t]; }
+:br Rd       is op1=0 & op2=0 & op3=2 & Rd & PD { build PD; local rw:4 = zext(Rd); local t:4 = inst_next + rw; goto [t]; }
 :br rel12a   is op1=1 & op4b=0 & rel12a { goto rel12a; }
-:jmp Rbj,Rd  is op1=0 & op2=0 & op3b=2 & Rbj & Rd { local hi:4 = zext(Rbj); local lo:4 = zext(Rd); local t:4 = (hi << 16) | lo; goto [t]; }
+:jmp Rbj,Rd  is op1=0 & op2=0 & op3b=2 & Rbj & Rd & PD { build PD; local hi:4 = zext(Rbj); local lo:4 = zext(Rd); local t:4 = (hi << 16) | lo; goto [t]; }
 :jmpf abs24  is (op1=0 & op2=2) ... & abs24 { goto abs24; }
 
 macro pushret(ret) {
@@ -490,25 +630,29 @@ macro pushret(ret) {
 	sp = sp + 4;
 }
 
+# The register forms take the target after the push (CGEN's do-call/do-calli evaluate the
+# destination after updating sp), which differs only for Rd = sp.
+
 macro pushiret(ret) {
 	*[ram]:4 sp = ret;
 	*[ram]:2 (sp + 4) = psw;
 	sp = sp + 6;
 }
 
-:callr Rd     is op1=0 & op2=0 & op3=1 & Rd { local rw:4 = zext(Rd); local t:4 = inst_next + rw; local ra:4 = inst_next; pushret(ra); call [t]; }
+:callr Rd     is op1=0 & op2=0 & op3=1 & Rd & PD { build PD; local ra:4 = inst_next; pushret(ra); local rw:4 = zext(Rd); local t:4 = inst_next + rw; call [t]; }
 :callr rel12a is op1=1 & op4b=1 & rel12a { local ra:4 = inst_next; pushret(ra); call rel12a; }
-:call Rbj,Rd  is op1=0 & op2=0 & op3b=5 & Rbj & Rd { local hi:4 = zext(Rbj); local lo:4 = zext(Rd); local t:4 = (hi << 16) | lo; local ra:4 = inst_next; pushret(ra); call [t]; }
+:call Rbj,Rd  is op1=0 & op2=0 & op3b=5 & Rbj & Rd & PD { build PD; local ra:4 = inst_next; pushret(ra); local hi:4 = zext(Rbj); local lo:4 = zext(Rd); local t:4 = (hi << 16) | lo; call [t]; }
 :callf abs24  is (op1=0 & op2=1) ... & abs24 { local ra:4 = inst_next; pushret(ra); call abs24; }
 
-:icallr Rd    is op1=0 & op2=0 & op3=3 & Rd { local rw:4 = zext(Rd); local t:4 = inst_next + rw; local ra:4 = inst_next; pushiret(ra); call [t]; }
-:icall Rbj,Rd is op1=0 & op2=0 & op3b=3 & Rbj & Rd { local hi:4 = zext(Rbj); local lo:4 = zext(Rd); local t:4 = (hi << 16) | lo; local ra:4 = inst_next; pushiret(ra); call [t]; }
-:icallf abs24 is (op1=0 & op2=3) ... & abs24 { local ra:4 = inst_next; pushiret(ra); call abs24; }
+:icallr Rd    is op1=0 & op2=0 & op3=3 & Rd { packpsw(); local ra:4 = inst_next; pushiret(ra); local rw:4 = zext(Rd); local t:4 = inst_next + rw; call [t]; }
+:icall Rbj,Rd is op1=0 & op2=0 & op3b=3 & Rbj & Rd { packpsw(); local ra:4 = inst_next; pushiret(ra); local hi:4 = zext(Rbj); local lo:4 = zext(Rd); local t:4 = (hi << 16) | lo; call [t]; }
+:icallf abs24 is (op1=0 & op2=3) ... & abs24 { packpsw(); local ra:4 = inst_next; pushiret(ra); call abs24; }
 
 :iret is opw=0x0002 {
 	sp = sp - 6;
 	local t:4 = *[ram]:4 sp;
 	psw = *[ram]:2 (sp + 4);
+	unpackpsw();
 	return [t];
 }
 :ret is opw=0x0003 {
@@ -564,4 +708,6 @@ macro pushiret(ret) {
 :halt  is opw=0x0008 { halt(); }
 :hold  is opw=0x000a { hold(); }
 :holdx is opw=0x000b { holdx(); }
-:reset is opw=0x000f { reset(); }
+# reset restarts the chip (CGEN models it as a nop): the userop keeps it visible and the branch
+# to the reset vector ends the flow, so what follows is not analysed as its continuation.
+:reset is opw=0x000f & resetvec { reset(); goto resetvec; }

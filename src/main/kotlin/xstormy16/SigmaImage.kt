@@ -50,7 +50,8 @@ class SigmaImage private constructor(
         }
 
         private fun identifyLens(bytes: ByteArray, inverted: Boolean): SigmaImage? {
-            if (!bytes.regionMatches(LENS_HEADER, CHIP_TAG)) {
+            // Flash must hold at least the reset vector (one jmpf) past the header.
+            if (bytes.size < LENS_FLASH_BASE + 4 || !bytes.regionMatches(LENS_HEADER, CHIP_TAG)) {
                 return null
             }
             val chip = bytes.cString(LENS_HEADER + CHIP_TAG.size + 1)

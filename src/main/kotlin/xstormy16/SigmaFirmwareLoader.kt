@@ -13,6 +13,7 @@ import ghidra.program.model.address.Address
 import ghidra.program.model.data.PointerDataType
 import ghidra.program.model.lang.LanguageCompilerSpecPair
 import ghidra.program.model.listing.Program
+import ghidra.program.model.symbol.RefType
 import ghidra.program.model.symbol.SourceType
 import ghidra.program.model.util.CodeUnitInsertionException
 
@@ -60,12 +61,17 @@ class SigmaFirmwareLoader : AbstractProgramWrapperLoader() {
         initialized(program, "FLASH", addr(program, SigmaImage.LENS_FLASH_BASE.toLong()), bytes,
             SigmaImage.LENS_FLASH_BASE, flashEnd - SigmaImage.LENS_FLASH_BASE, "Program flash", log, execute = true)
         program.memory.createByteMappedBlock("NEAR_FLASH", ram.getAddress(0x8000),
-            addr(program, 0x8000), 0x8000, false).apply {
+            addr(program, 0x8000), minOf(0x8000, flashEnd - SigmaImage.LENS_FLASH_BASE).toLong(), false).apply {
             comment = "Near view of the first 32 KiB of flash"
             isWrite = false
         }
-        program.memory.createByteMappedBlock("FAR_RAM", addr(program, 0), ram.getAddress(0), 0x8000, false).apply {
-            comment = "Far (movf) view of RAM and SFRs"
+        // The far view is split like the near one so that far SFR accesses stay volatile too.
+        program.memory.createByteMappedBlock("FAR_RAM", addr(program, 0), ram.getAddress(0), 0x7f00, false).apply {
+            comment = "Far (movf) view of RAM"
+        }
+        program.memory.createByteMappedBlock("FAR_SFR", addr(program, 0x7f00), ram.getAddress(0x7f00), 0x100, false).apply {
+            comment = "Far (movf) view of the special function registers"
+            isVolatile = true
         }
 
         // The update header ("CHIPINFORMATION", chip name, region table) sits just below
@@ -77,35 +83,33 @@ class SigmaFirmwareLoader : AbstractProgramWrapperLoader() {
                 bytes.size - flashEnd, "Image data beyond the 128 KiB flash", log)
         }
 
-        // Vector table: a run of 4-byte "jmpf" instructions starting at the flash base.
-        var count = 0
-        while (count < 64) {
-            val at = SigmaImage.LENS_FLASH_BASE + 4 * count
-            if (bytes[at + 1] != 0x02.toByte() || bytes[at + 3] != 0.toByte()) break
-            count++
-        }
+        // Vector table: a run of 4-byte "jmpf" instructions into flash, starting at the flash
+        // base. It ends at the first word that is not a jmpf (0x02 in the opcode byte) or
+        // whose target lies outside the loaded flash.
         val symbols = program.symbolTable
-        for (n in 0 until count) {
+        for (n in 0 until 64) {
             val at = SigmaImage.LENS_FLASH_BASE + 4 * n
-            val vector = addr(program, at.toLong())
+            if (at + 4 > flashEnd || bytes[at + 1] != 0x02.toByte()) break
             // jmpf: low 8 address bits in the first byte, high 16 in the second word
             val target = bytes.u8(at) or (bytes.u8(at + 2) shl 8) or (bytes.u8(at + 3) shl 16)
+            if (target !in SigmaImage.LENS_FLASH_BASE until flashEnd) break
             val name = if (n == 0) "RESET" else "VECTOR_%02d".format(n)
+            val vector = addr(program, at.toLong())
             symbols.createLabel(vector, name, SourceType.IMPORTED)
             symbols.addExternalEntryPoint(vector)
-            if (target in SigmaImage.LENS_FLASH_BASE until flashEnd) {
-                val handler = addr(program, target)
-                symbols.createLabel(handler, "${name}_handler", SourceType.IMPORTED)
-                symbols.addExternalEntryPoint(handler)
-            }
+            val handler = addr(program, target)
+            symbols.createLabel(handler, "${name}_handler", SourceType.IMPORTED)
+            symbols.addExternalEntryPoint(handler)
         }
     }
 
     private fun loadDock(program: Program, image: SigmaImage, log: MessageLog) {
         val bytes = image.bytes
+        // Drop the erased (0xFF) flash at the end, keeping whole 4 KiB pages but never
+        // going past the end of the file.
         var used = bytes.size
         while (used > 0 && bytes[used - 1] == 0xff.toByte()) used--
-        used = (used + 0xfff) and 0xfff.inv()
+        used = minOf((used + 0xfff) and 0xfff.inv(), bytes.size)
 
         initialized(program, "FLASH", addr(program, 0), bytes, 0, used, "Program flash", log, execute = true)
         uninitialized(program, "SRAM", addr(program, 0x2000_0000), 0x10000, "On-chip SRAM", log)
@@ -120,11 +124,13 @@ class SigmaFirmwareLoader : AbstractProgramWrapperLoader() {
             null, null, null, null, "SVCall", "DebugMonitor", null, "PendSV", "SysTick")
         val symbols = program.symbolTable
         val listing = program.listing
+        val refs = program.referenceManager
         // Past the 16 system entries, the table ends at the first word that is neither zero
-        // nor a Thumb pointer into flash.
-        for (n in 0 until 256) {
+        // nor a Thumb pointer into flash. A handler pointer has bit 0 set (Thumb) and must
+        // point past the 16 system entries.
+        for (n in 0 until minOf(256, used / 4)) {
             val value = bytes.u32(4 * n)
-            val isHandler = n > 0 && (value and 1L) == 1L && value < used
+            val isHandler = n > 0 && (value and 1L) == 1L && value in 4L * names.size until used
             if (n >= names.size && value != 0L && !isHandler) break
             val name = if (n < names.size) names[n] else "IRQ%d".format(n - names.size)
             val slot = addr(program, 4L * n)
@@ -136,10 +142,16 @@ class SigmaFirmwareLoader : AbstractProgramWrapperLoader() {
             } catch (e: CodeUnitInsertionException) {
                 log.appendMsg("Could not mark vector $n: ${e.message}")
             }
-            if (isHandler && name != null) {
+            if (isHandler) {
+                // The pointer's own reference lands on handler+1, inside the first instruction;
+                // point it at the handler instead.
                 val handler = addr(program, value and 1L.inv())
-                symbols.createLabel(handler, "${name}_Handler", SourceType.IMPORTED)
-                symbols.addExternalEntryPoint(handler)
+                refs.getReferencesFrom(slot).forEach { refs.delete(it) }
+                refs.addMemoryReference(slot, handler, RefType.DATA, SourceType.IMPORTED, 0)
+                if (name != null) {
+                    symbols.createLabel(handler, "${name}_Handler", SourceType.IMPORTED)
+                    symbols.addExternalEntryPoint(handler)
+                }
             }
         }
     }

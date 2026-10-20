@@ -1,0 +1,200 @@
+{
+ "buckets": {
+  "CALLFIMM|645>274|sut_exc|ADDR_EDGE": {
+   "adjudication": "KNOWN-2",
+   "count": 167
+  },
+  "CALLGR|644>194|sut_exc|ADDR_EDGE": {
+   "adjudication": "KNOWN-2",
+   "count": 1
+  },
+  "CALLGR|644>195|sut_exc|ADDR_EDGE": {
+   "adjudication": "KNOWN-2",
+   "count": 19
+  },
+  "CALLRGR|642>194|sut_exc|ADDR_EDGE": {
+   "adjudication": "KNOWN-2",
+   "count": 1
+  },
+  "CALLRGR|642>195|sut_exc|ADDR_EDGE": {
+   "adjudication": "KNOWN-2",
+   "count": 12
+  },
+  "CALLRIMM|643>271|sut_exc|ADDR_EDGE": {
+   "adjudication": "KNOWN-2",
+   "count": 1354
+  },
+  "CLR1HMEMIMM|579>266|Z16|": {
+   "adjudication": "ORC-1",
+   "count": 6
+  },
+  "CLR1LMEMIMM|578>265|Z16|": {
+   "adjudication": "ORC-1",
+   "count": 5
+  },
+  "DIVLH|684|sut_exc|REF_UNDEFINED": {
+   "adjudication": "UND-1",
+   "count": 485
+  },
+  "DIV|674|sut_exc|REF_UNDEFINED": {
+   "adjudication": "UND-1",
+   "count": 22
+  },
+  "ICALLFIMM|649>274|mem_addr|ADDR_EDGE,PSW_ALIAS": {
+   "adjudication": "KNOWN-2",
+   "count": 50
+  },
+  "ICALLFIMM|649>274|sut_exc|ADDR_EDGE": {
+   "adjudication": "KNOWN-2",
+   "count": 180
+  },
+  "ICALLGR|648|mem_addr|ADDR_EDGE,PSW_ALIAS": {
+   "adjudication": "KNOWN-2",
+   "count": 8
+  },
+  "ICALLGR|648|sut_exc|ADDR_EDGE": {
+   "adjudication": "KNOWN-2",
+   "count": 20
+  },
+  "ICALLRGR|647|mem_addr|ADDR_EDGE,PSW_ALIAS": {
+   "adjudication": "KNOWN-2",
+   "count": 3
+  },
+  "ICALLRGR|647|sut_exc|ADDR_EDGE": {
+   "adjudication": "KNOWN-2",
+   "count": 9
+  },
+  "IRET|651|sut_exc|ADDR_EDGE": {
+   "adjudication": "KNOWN-2",
+   "count": 1
+  },
+  "MOVGRGRIIPOSTINC|368>313>197>338|VAL*,read_extra|ADDR_EDGE": {
+   "adjudication": "ORC-2",
+   "count": 16
+  },
+  "MOVGRGRIIPOSTINC|368>313>197>338|VAL*,read_extra|ADDR_EDGE,SP_ALIAS": {
+   "adjudication": "ORC-2",
+   "count": 3
+  },
+  "MOVGRGRIIPREDEC|371>313>340>214|VAL*,read_extra|ADDR_EDGE": {
+   "adjudication": "ORC-2",
+   "count": 16
+  },
+  "MOVGRGRIIPREDEC|371>313>340>214|VAL*,read_extra|ADDR_EDGE,SP_ALIAS": {
+   "adjudication": "ORC-2",
+   "count": 1
+  },
+  "MOVGRGRII|365>313>197>214|VAL*,read_extra|ADDR_EDGE": {
+   "adjudication": "ORC-2",
+   "count": 11
+  },
+  "MOVGRGRII|365>313>197>214|VAL*,read_extra|ADDR_EDGE,SP_ALIAS": {
+   "adjudication": "ORC-2",
+   "count": 1
+  },
+  "MOVGRIIGR|374>315>197>214|mem_addr|ADDR_EDGE": {
+   "adjudication": "ORC-2",
+   "count": 12
+  },
+  "MOVGRIIGR|374>315>197>214|mem_addr|ADDR_EDGE,SP_ALIAS": {
+   "adjudication": "ORC-2",
+   "count": 4
+  },
+  "MOVGRIIPOSTINCGR|377>315>197>338|mem_addr|ADDR_EDGE": {
+   "adjudication": "ORC-2",
+   "count": 12
+  },
+  "MOVGRIIPOSTINCGR|377>315>197>338|mem_addr|ADDR_EDGE,SP_ALIAS": {
+   "adjudication": "ORC-2",
+   "count": 1
+  },
+  "MOVGRIIPREDECGR|380>328>332>340>214|mem_addr|ADDR_EDGE": {
+   "adjudication": "ORC-2",
+   "count": 10
+  },
+  "MOVHGRMEM|440>266|r0|": {
+   "adjudication": "ORC-1",
+   "count": 528
+  },
+  "MOVHGRMEM|440>266|r1|": {
+   "adjudication": "ORC-1",
+   "count": 510
+  },
+  "MOVHGRMEM|440>266|r2|": {
+   "adjudication": "ORC-1",
+   "count": 504
+  },
+  "MOVHGRMEM|440>266|r3|": {
+   "adjudication": "ORC-1",
+   "count": 509
+  },
+  "MOVHGRMEM|440>266|r4|": {
+   "adjudication": "ORC-1",
+   "count": 505
+  },
+  "MOVHGRMEM|440>266|r5|": {
+   "adjudication": "ORC-1",
+   "count": 501
+  },
+  "MOVHGRMEM|440>266|r6|": {
+   "adjudication": "ORC-1",
+   "count": 492
+  },
+  "MOVHGRMEM|440>266|r7|": {
+   "adjudication": "ORC-1",
+   "count": 509
+  },
+  "MOVLGRMEM|436>265|r0|": {
+   "adjudication": "ORC-1",
+   "count": 501
+  },
+  "MOVLGRMEM|436>265|r1|": {
+   "adjudication": "ORC-1",
+   "count": 508
+  },
+  "MOVLGRMEM|436>265|r2|": {
+   "adjudication": "ORC-1",
+   "count": 516
+  },
+  "MOVLGRMEM|436>265|r3|": {
+   "adjudication": "ORC-1",
+   "count": 520
+  },
+  "MOVLGRMEM|436>265|r4|": {
+   "adjudication": "ORC-1",
+   "count": 498
+  },
+  "MOVLGRMEM|436>265|r5|": {
+   "adjudication": "ORC-1",
+   "count": 492
+  },
+  "MOVLGRMEM|436>265|r6|": {
+   "adjudication": "ORC-1",
+   "count": 502
+  },
+  "MOVLGRMEM|436>265|r7|": {
+   "adjudication": "ORC-1",
+   "count": 520
+  },
+  "POPGR|460>242|sut_exc|ADDR_EDGE": {
+   "adjudication": "KNOWN-2",
+   "count": 5
+  },
+  "PUSHGR|459>195|sut_exc|ADDR_EDGE": {
+   "adjudication": "KNOWN-2",
+   "count": 6
+  },
+  "RESET|713>273|events,flow,npc|": {
+   "adjudication": "KNOWN-1",
+   "count": 4
+  },
+  "SDIVLH|692|sut_exc|REF_UNDEFINED": {
+   "adjudication": "UND-1",
+   "count": 484
+  },
+  "SDIV|679|sut_exc|REF_UNDEFINED": {
+   "adjudication": "UND-1",
+   "count": 22
+  }
+ }
+}

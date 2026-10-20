@@ -1,0 +1,15 @@
+# S0 golden vectors for confirmed semantic findings. Each carries the review finding id
+# and an xfail naming its adjudications.yaml entry while the slaspec fix is pending; the
+# gate fails if one of them starts to pass, so the xfail has to be removed with the fix.
+# Vectors without an xfail are fixed findings, kept as regression checks.
+#
+# ov-carry-in-or: OV of adc/sbc with carry-in is the overflow of the whole a+b+c
+adc-ov-carry    w0=4b21 r1=8000 r2=ffff psw=4         ; expect r1=8000 psw=106d ; finding=ov-carry-in-or
+sbc-ov-borrow   w0=4f21 r1=7fff r2=ffff psw=4         ; expect r1=7fff psw=102c ; finding=ov-carry-in-or
+# movf-predec-store-flag-order: movf.w (--r1),r1 takes the flags from r1 before the decrement
+movf-predec-alias w0=6f11 r1=2 r8=0                   ; expect r1=0 psw=1020 m0=0 m1=0 ; finding=movf-predec-store-flag-order
+# psw-reg-not-synced-with-flags: r14 is the PSW, flags and Rx are its bits
+mov-psw-r1      w0=461e r1=1c                         ; expect psw=e03c ; finding=psw-reg-not-synced-with-flags
+set1-psw-cy     w0=092e                               ; expect psw=e024 ; finding=psw-reg-not-synced-with-flags
+# call-through-sp (was OPEN-1): callr/call/icall with Rd = sp take the target from sp after the push
+callr-sp-target w0=001f                               ; expect npc=17f06 sp=7f04 m7f00=2 m7f01=0 m7f02=1 m7f03=0 ; finding=call-through-sp
