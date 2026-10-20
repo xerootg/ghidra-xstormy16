@@ -1,0 +1,74 @@
+# Adjudications: every mismatch bucket of the semantic smoke run must match exactly one
+# entry here (the first that matches wins), or the gate fails as UNADJUDICATED.
+#
+# A bucket key is "INSN|ctor lines|fields|tags" (see sut/Compare.java). An entry matches
+# when its regexes all match: insn (CGEN dni name), fields (comma-joined mismatching
+# fields) and tags (comma-joined tags, may be empty). Unset regexes match anything.
+#
+# kind:
+#   FIXED-PENDING      a confirmed SLEIGH defect; the fix has not landed. Once it does the
+#                      buckets vanish, the gate reports the entry as stale, and the entry
+#                      (and the xfail on its golden vectors) has to be removed with the fix.
+#   SHARED-ASSUMPTION  the oracle's .cpu semantics and the slaspec disagree on a point that
+#                      no source settles; the slaspec follows other evidence. The raw
+#                      verdict stays visible in every run.
+#   SLEIGH-BY-DESIGN   a deliberate modelling difference.
+#   UNDEFINED          the reference has no defined result.
+#   OPEN               not decided yet.
+# Evidence fields must not quote firmware code or bytes (see README).
+
+- id: ORC-2
+  kind: SHARED-ASSUMPTION
+  insn: ^MOVGR
+  fields: ^(VAL\*,)?(mem_addr|read_extra)$
+  tags: ADDR_EDGE
+  evidence: >-
+    Near effective addresses (Rs + imm12, (--Rs)) are 32-bit sums in CGEN and reach past
+    0xffff; the slaspec wraps NA to the 16-bit near space, as the 16-bit address bus and
+    GCC's 16-bit Pmode assume.
+
+- id: KNOWN-2
+  kind: SLEIGH-BY-DESIGN
+  insn: ^(I?CALL|PUSH|POP|RET|IRET)
+  fields: ^(mem_addr|sut_exc)$
+  tags: ADDR_EDGE
+  evidence: >-
+    Stack accesses that cross 0xffff/0: CGEN continues at 0x10000 (flat 32-bit bus); the
+    slaspec keeps each push, pop and return-address/frame access a single 2- or 4-byte
+    access in the 16-bit ram space, so its later parts wrap to 0 and an access that itself
+    runs past 0xffff stops Ghidra's emulator ("exceeds address space"). Decided (was
+    OPEN-2): no change. The stack lives in RAM (near 0x0000-0x7fff), so such a stack is
+    already broken firmware; near addresses are 16-bit (see ORC-2), so continuing at
+    0x10000 would not be the chip either; and splitting the accesses into wrapping halves or
+    bytes would cost the decompiler its plain push/pop and call-frame p-code.
+
+- id: ORC-1
+  kind: SHARED-ASSUMPTION
+  insn: ^(MOV[LH]GRMEM|(SET1|CLR1)[LH]MEMIMM)$
+  fields: ^(r[0-7]|Z16)$
+  tags: ^$
+  evidence: >-
+    Byte loads from lmem/hmem: CGEN sign-extends the QI value (Rm gets 0xff.. and the
+    set1/clr1 flag value is computed from the sign-extended byte, so Z16 differs), the
+    slaspec zero-extends. GCC's stormy16.md zero_extendqihi2 emits mov.b for a zero-extend.
+
+- id: UND-1
+  kind: UNDEFINED
+  fields: ^sut_exc$
+  tags: REF_UNDEFINED
+  evidence: >-
+    div/sdiv/divlh/sdivlh by zero (and sdivlh 0x80000000/-1) have no defined result; the
+    oracle does not execute them. Ghidra's emulator throws ("Remainder by 0") instead of
+    completing. Decided: no guard on the divisor. Any guard (a branch around the divide or
+    a substituted divisor) would show up in every decompiled division, and stopping the
+    emulator on a divide by zero is a useful outcome for an undefined operation.
+
+- id: KNOWN-1
+  kind: SLEIGH-BY-DESIGN
+  insn: ^RESET$
+  fields: ^events,flow,npc(,npc_hi)?$
+  evidence: >-
+    CGEN's reset is a nop ("eq to nop for the moment"); the chip restarts. The slaspec
+    calls a reset() userop so the decompiler shows it and then branches to the reset
+    vector (0x8000, the pspec's RESET entry), so the instruction has no fall-through and
+    the code after it is not taken as part of the same flow.

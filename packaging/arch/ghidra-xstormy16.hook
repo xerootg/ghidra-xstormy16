@@ -3,7 +3,6 @@ Operation = Install
 Operation = Upgrade
 Type = Package
 Target = ghidra
-Target = ghidra-noprompt
 Target = ghidra-xstormy16
 
 [Action]

@@ -3,3 +3,6 @@
 /lib/
 /.gradle/
 *.sla
+/test/semantic/build/
+/test/semantic/oracle/build/
+/test/semantic/sut/build/

@@ -2,15 +2,25 @@
 
 pkgname=ghidra-xstormy16
 pkgver=1.0.1
-pkgrel=1
+pkgrel=2
 pkgdesc='Ghidra processor module for Xstormy16 (Sanyo/onsemi LC88) with a loader for Sigma lens and USB dock firmware'
 arch=('any')
 url='https://github.com/xerootg/ghidra-xstormy16'
 license=('GPL-3.0-or-later')
 depends=('ghidra')
+# ghidra-noprompt provides ghidra, so without this pacman would keep this package
+# when ghidra-noprompt replaces ghidra, stranded in an /opt/ghidra nothing reads.
+# The feed's ghidra-ext-xstormy16 is the same extension for ghidra-noprompt.
+conflicts=('ghidra-noprompt' 'ghidra-ext-xstormy16')
 makedepends=('gradle' 'java-environment>=21' 'libarchive')
-source=("$pkgname-$pkgver.tar.gz::$url/archive/refs/tags/v$pkgver.tar.gz")
-sha256sums=('7b5310c046cdc88fb2566771d6b3163eba48644c0f57d80b83295b2efe0e9bb8')
+# The hook and its script come from beside this PKGBUILD rather than from the tag,
+# so a fix to them ships without waiting for a release.
+source=("$pkgname-$pkgver.tar.gz::$url/archive/refs/tags/v$pkgver.tar.gz"
+        'ghidra-xstormy16.hook'
+        'ghidra-xstormy16-refresh')
+sha256sums=('7b5310c046cdc88fb2566771d6b3163eba48644c0f57d80b83295b2efe0e9bb8'
+            '28c8a95ea1eabba9dc5cbac1182458abc44ae2c73c8f37efaf8011701be4ecb8'
+            '0bf6871c4c03cf08a446ac425761f49bc4e9e9bd2d005aa29e4089773791d77c')
 
 build() {
 	cd "$pkgname-$pkgver"
@@ -23,7 +33,7 @@ package() {
 	cd "$pkgname-$pkgver"
 	install -d "$pkgdir/opt/ghidra/Ghidra/Extensions"
 	bsdtar -xf dist/*.zip -C "$pkgdir/opt/ghidra/Ghidra/Extensions"
-	install -Dm755 packaging/arch/ghidra-xstormy16-refresh "$pkgdir/usr/share/$pkgname/refresh"
-	install -Dm644 packaging/arch/ghidra-xstormy16.hook "$pkgdir/usr/share/libalpm/hooks/$pkgname.hook"
+	install -Dm755 "$srcdir/ghidra-xstormy16-refresh" "$pkgdir/usr/share/$pkgname/refresh"
+	install -Dm644 "$srcdir/ghidra-xstormy16.hook" "$pkgdir/usr/share/libalpm/hooks/$pkgname.hook"
 	install -Dm644 README.md "$pkgdir/usr/share/doc/$pkgname/README.md"
 }

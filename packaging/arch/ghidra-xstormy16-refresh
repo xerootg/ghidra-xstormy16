@@ -5,7 +5,12 @@
 set -e
 ghidra=/opt/ghidra
 ext=$ghidra/Ghidra/Extensions/xstormy16
-[ -d "$ext" ] && [ -x "$ghidra/support/sleigh" ] || exit 0
+[ -d "$ext" ] || exit 0
+if [ ! -x "$ghidra/support/sleigh" ]; then
+	echo "warning: $ext is installed but there is no Ghidra in $ghidra to load it." >&2
+	echo "warning: the ghidra-xstormy16 package only works with Arch's ghidra package." >&2
+	exit 0
+fi
 version=$(sed -n 's/^application.version=//p' "$ghidra/Ghidra/application.properties")
 sed -i "s/^version=.*/version=$version/" "$ext/extension.properties"
 "$ghidra/support/sleigh" -a "$ext/data/languages" > /dev/null 2>&1

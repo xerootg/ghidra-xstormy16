@@ -1,0 +1,15 @@
+# S0 golden vectors: hand-checked single-instruction results.
+# "<name> <initial state> ; expect <fields>". Unset registers are 0, sp is 7f00 and
+# pc is 10000. Values are hex; m<addr> is a byte written to the flat bus.
+add-ffff-1      w0=4921 r1=ffff r2=1                  ; expect r1=0 psw=100f
+add-7fff-1      w0=4921 r1=7fff r2=1                  ; expect r1=8000 psw=1079
+sub-0-1         w0=4d21 r1=0 r2=1                     ; expect r1=ffff psw=104c
+adc-cy-plain    w0=4b21 r1=1 r2=1 psw=4               ; expect r1=3 psw=1000
+div-100-7       w0=00c0 r0=100 r2=7                   ; expect r0=24 r1=4
+mul-ffff-ffff   w0=00d0 r0=ffff r2=ffff               ; expect r0=1 r1=fffe
+push-r1         w0=0081 r1=beef                       ; expect sp=7f02 m7f00=ef m7f01=be
+pop-r1          w0=0091 sp=7f02 pc=10000              ; expect sp=7f00 insn=POPGR
+callf           w0=0145 w1=0123 pc=1000               ; expect npc=12345 sp=7f04 m7f00=4 m7f01=10 m7f02=0 m7f03=0
+ret             w0=0003 sp=7f04                       ; expect sp=7f00 insn=RET
+mov-lmem-imm    w0=7810 w1=1234                       ; expect m10=34 insn=MOVLMEMIMM
+invalid-0007    w0=0007                               ; expect status=INVALID
