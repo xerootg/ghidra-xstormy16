@@ -1,8 +1,8 @@
 # Maintainer: xerootg <4009802+xerootg@users.noreply.github.com>
 
 pkgname=ghidra-xstormy16
-pkgver=1.0.1
-pkgrel=2
+pkgver=1.1.0
+pkgrel=1
 pkgdesc='Ghidra processor module for Xstormy16 (Sanyo/onsemi LC88) with a loader for Sigma lens and USB dock firmware'
 arch=('any')
 url='https://github.com/xerootg/ghidra-xstormy16'
@@ -18,7 +18,7 @@ makedepends=('gradle' 'java-environment>=21' 'libarchive')
 source=("$pkgname-$pkgver.tar.gz::$url/archive/refs/tags/v$pkgver.tar.gz"
         'ghidra-xstormy16.hook'
         'ghidra-xstormy16-refresh')
-sha256sums=('7b5310c046cdc88fb2566771d6b3163eba48644c0f57d80b83295b2efe0e9bb8'
+sha256sums=('28a62f0912aa241c655558a856bd9e6dfe3dbf08ad2d58b329b848795d6317a1'
             '28c8a95ea1eabba9dc5cbac1182458abc44ae2c73c8f37efaf8011701be4ecb8'
             '0bf6871c4c03cf08a446ac425761f49bc4e9e9bd2d005aa29e4089773791d77c')
 
