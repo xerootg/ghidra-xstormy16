@@ -131,7 +131,9 @@ jobs:
           git diff --exit-code test/semantic/oracle/cgen26/gen
 
       - name: Semantic smoke run
-        run: test/semantic/run-smoke.sh --threads "$(nproc)"
+        # GitHub's runner images set XDG_CONFIG_HOME, which the script would treat as
+        # personal Ghidra settings; unset it so it uses its own scratch settings.
+        run: env -u XDG_CONFIG_HOME -u XDG_CACHE_HOME test/semantic/run-smoke.sh --threads "$(nproc)"
 
       - name: Job summary
         if: always()
