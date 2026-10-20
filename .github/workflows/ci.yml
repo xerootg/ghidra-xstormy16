@@ -195,6 +195,9 @@ jobs:
           mkdir -p "$dest"
           unzip -q dist/*.zip -d "$dest"
 
+      - name: Loader checks
+        run: test/loader/run_loader_test.sh
+
       - name: Decompiler golden checks
         shell: bash
         run: |
